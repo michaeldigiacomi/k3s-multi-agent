@@ -1,0 +1,117 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hermes
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: hermes
+  template:
+    metadata:
+      labels:
+        app: hermes
+    spec:
+      initContainers:
+        - name: bootstrap-tools
+          image: nousresearch/hermes-agent:latest
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              apt-get update -qq && apt-get install -y -qq curl ca-certificates
+              mkdir -p /opt/data/bin /opt/data/tools/bin /opt/data/tools/lib/x86_64-linux-gnu
+              # Install kubectl
+              if [ ! -f /opt/data/bin/kubectl ]; then
+                KUBE_VER=$(curl -fsSL https://dl.k8s.io/release/stable.txt)
+                curl -fsSL "https://dl.k8s.io/release/${KUBE_VER}/bin/linux/amd64/kubectl" -o /opt/data/bin/kubectl
+                chmod +x /opt/data/bin/kubectl
+              fi
+              # Copy curl + shared libs to persistent storage
+              cp /usr/bin/curl /opt/data/tools/bin/curl
+              ldd /usr/bin/curl | grep -o '/[^ ]*' | while read lib; do
+                cp "$lib" /opt/data/tools/lib/x86_64-linux-gnu/ 2>/dev/null || true
+              done
+              # Bootstrap pip into persistent volume
+              if [ ! -f /opt/data/local/bin/pip3 ]; then
+                curl -fsSL https://bootstrap.pypa.io/get-pip.py | python3 - --prefix /opt/data
+              fi
+              chown -R 10000:10000 /opt/data/bin /opt/data/local /opt/data/tools 2>/dev/null || true
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+          volumeMounts:
+            - name: hermes-data
+              mountPath: /opt/data
+      containers:
+        - name: hermes
+          image: nousresearch/hermes-agent:latest
+          imagePullPolicy: Always
+          args: ["gateway", "run"]
+          ports:
+            - containerPort: 8642
+          env:
+            - name: HERMES_HOME
+              value: /opt/data
+            - name: PATH
+              value: /opt/data/tools/bin:/opt/data/bin:/opt/data/local/bin:/home/hermes/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+            - name: LD_LIBRARY_PATH
+              value: /opt/data/tools/lib/x86_64-linux-gnu
+            - name: PYTHONPATH
+              value: /opt/data/local/lib/python3.13/dist-packages
+            - name: HERMES_INFERENCE_PROVIDER
+              value: custom  # Overridden by overlays
+            - name: OPENAI_BASE_URL
+              value: http://ollama.ollama.svc.cluster.local:11434/v1
+            - name: HERMES_MODEL
+              value: glm-5.1:cloud  # Overridden by overlays
+            - name: OLLAMA_HOST
+              value: http://ollama.ollama.svc.cluster.local:11434
+            - name: API_SERVER_ENABLED
+              value: "true"
+            - name: API_SERVER_HOST
+              value: "0.0.0.0"
+            - name: API_SERVER_PORT
+              value: "8642"
+            - name: API_SERVER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: hermes-secrets
+                  key: API_SERVER_KEY
+            - name: OLLAMA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: hermes-secrets
+                  key: OLLAMA_API_KEY
+                  optional: true
+            # Discord config — overridden per overlay or omitted for API-only testing
+            - name: DISCORD_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hermes-secrets
+                  key: DISCORD_BOT_TOKEN
+                  optional: true
+            - name: DISCORD_ALLOWED_USERS
+              value: "1205965720018489344"
+            - name: DISCORD_HOME_CHANNEL
+              value: "1467952530150654186"
+          envFrom:
+            - secretRef:
+                name: hermes-secrets
+                optional: true
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+          volumeMounts:
+            - name: hermes-data
+              mountPath: /opt/data
+      volumes:
+        - name: hermes-data
+          persistentVolumeClaim:
+            claimName: hermes-data-pvc

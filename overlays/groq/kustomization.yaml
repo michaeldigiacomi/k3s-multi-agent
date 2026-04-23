@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+namespace: hermes-groq
+
+patches:
+  - target:
+      kind: Deployment
+      name: hermes
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/env/3/value  # HERMES_INFERENCE_PROVIDER
+        value: custom
+      - op: replace
+        path: /spec/template/spec/containers/0/env/4/value  # OPENAI_BASE_URL
+        value: https://api.groq.com/openai/v1
+      - op: replace
+        path: /spec/template/spec/containers/0/env/5/value  # HERMES_MODEL
+        value: llama-3.3-70b-versatile

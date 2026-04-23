@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+namespace: hermes-ollama-local
+
+patches:
+  - target:
+      kind: Deployment
+      name: hermes
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/env/3/value  # HERMES_INFERENCE_PROVIDER
+        value: custom
+      - op: replace
+        path: /spec/template/spec/containers/0/env/4/value  # OPENAI_BASE_URL
+        value: http://ollama.ollama.svc.cluster.local:11434/v1
+      - op: replace
+        path: /spec/template/spec/containers/0/env/5/value  # HERMES_MODEL
+        value: llama3.1:8b
