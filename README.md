@@ -161,6 +161,32 @@ Each overlay creates a fully isolated instance:
 | **Config** | Own model, provider, base URL | Untouched |
 | **Pod** | Isolated — no shared state | Untouched |
 
+## CI/CD Pipeline
+
+Pushing to `main` automatically validates and deploys changed overlays to your k3s cluster via GitHub Actions.
+
+**Automatic (push to main):**
+- Detects which overlays changed
+- Validates kustomize builds and SOUL.md presence
+- Applies the overlay + creates secrets + restarts the deployment
+
+**Manual (workflow dispatch):**
+- **Deploy**: Actions → Run workflow → select overlay (or "all")
+- **Teardown**: Actions → Run workflow → select action: teardown → select overlay
+
+**Required GitHub secrets:**
+
+| Secret | Description |
+|--------|-------------|
+| `KUBE_CONFIG` | k3s kubeconfig (base64) |
+| `TAILSCALE_AUTH_KEY` | Tailscale auth key for k8s connectivity |
+| `OPENAI_API_KEY` | OpenAI API key (for openai overlay) |
+| `ANTHROPIC_API_KEY` | Anthropic API key (for anthropic overlay) |
+| `GROQ_API_KEY` | Groq API key (for groq overlay) |
+| `OLLAMA_API_KEY` | Ollama API key (for ollama-local overlay, optional) |
+
+Provider API keys only need to be set for overlays you're actually using. The pipeline auto-generates `API_SERVER_KEY` per namespace on each deploy — no need to set it manually.
+
 ## Production Hermes
 
 Your production Hermes instance lives in the `hermes` namespace and is **never modified** by this tool. The base manifests here are a template — overlays apply to brand-new namespaces. You can safely spin up and tear down test instances without any risk to production.
