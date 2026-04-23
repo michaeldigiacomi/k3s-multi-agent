@@ -163,18 +163,66 @@ Each overlay creates a fully isolated instance:
 
 ## CI/CD Pipeline
 
-Pushing to `main` automatically validates and deploys changed overlays to your k3s cluster via GitHub Actions.
+A single GitHub Actions workflow manages all agents. It uses **matrix jobs** — one job per overlay, running in parallel when multiple agents change.
 
-**Automatic (push to main):**
-- Detects which overlays changed
-- Validates kustomize builds and SOUL.md presence
-- Applies the overlay + creates secrets + restarts the deployment
+### How it works
 
-**Manual (workflow dispatch):**
-- **Deploy**: Actions → Run workflow → select overlay (or "all")
-- **Teardown**: Actions → Run workflow → select action: teardown → select overlay
+```
+Push to main
+  │
+  ├─ sync-and-detect
+  │   ├─ Syncs persona files → overlay SOUL.md (based on overlay-map.yaml)
+  │   ├─ Commits synced files if changed [skip ci]
+  │   └─ Outputs list of changed overlays (e.g. ["openai", "groq"])
+  │
+  ├─ validate (parallel matrix)
+  │   ├─ runner 1: kubectl kustomize overlays/openai ✓
+  │   └─ runner 2: kubectl kustomize overlays/groq ✓
+  │
+  └─ deploy (parallel matrix)
+      ├─ runner 1: apply openai overlay + secrets + restart → namespace: hermes-openai
+      └─ runner 2: apply groq overlay + secrets + restart → namespace: hermes-groq
+```
 
-**Required GitHub secrets:**
+### Triggers
+
+| Trigger | What happens |
+|---------|-------------|
+| Push to `main` (any overlay/persona/base change) | Detects which overlays changed, validates, deploys only those |
+| Push to `main` (base/ or workflow change) | Rebuilds **all** overlays |
+| Push to `main` (persona change in `personas/`) | Syncs persona → overlays per `overlay-map.yaml`, rebuilds affected overlays |
+| Manual: Deploy | Actions → Run workflow → pick overlay (or empty = all) → deploy |
+| Manual: Teardown | Actions → Run workflow → action: teardown → pick overlay → deletes namespace |
+
+### Adding a new agent
+
+1. Create overlay: `overlays/my-provider/kustomization.yaml` + `SOUL.md`
+2. Add entry to `overlay-map.yaml`: `my-provider: default.md`
+3. Push — the workflow detects the new overlay and deploys it
+
+### Changing a persona
+
+Edit `personas/sre.md` → push → the workflow:
+1. Reads `overlay-map.yaml` to find which overlays use `sre.md`
+2. Copies `personas/sre.md` → `overlays/ollama-local/SOUL.md`
+3. Commits the sync
+4. Deploys only `ollama-local`
+
+### Swapping personas
+
+Change the mapping in `overlay-map.yaml`:
+
+```yaml
+# Before:
+openai: default.md
+
+# After:
+openai: sre.md
+```
+
+Push and the openai agent will rebuild with the SRE persona.
+
+### Required GitHub secrets
 
 | Secret | Description |
 |--------|-------------|

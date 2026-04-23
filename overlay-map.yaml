@@ -1,0 +1,9 @@
+# Maps each overlay to its persona source.
+# When a persona file changes, the workflow syncs it to the overlay
+# and redeploys only the affected overlays.
+#
+# Format: overlay_name -> persona_filename
+openai: default.md
+anthropic: security.md
+groq: devops.md
+ollama-local: sre.md

@@ -1,29 +1,3 @@
-# Agent CI/CD Design Notes
-#
-# This repo doesn't build Docker images — Hermes images are pre-built at
-# nousresearch/hermes-agent:latest. Instead, the CI/CD pipeline orchestrates:
-#
-# 1. Validation: Verify kustomize overlays render correctly
-# 2. Secrets: Create/update Kubernetes secrets (API keys are NOT in git)
-# 3. Deployment: Apply kustomize overlays to create/update agent namespaces
-# 4. Teardown: Destroy agent namespaces on branch deletion or manual trigger
-#
-# Trigger model:
-#   - Push to main → deploy all changed overlays
-#   - Push to branch overlays/* → deploy that overlay as a preview (-staging suffix)
-#   - Manual dispatch → deploy/teardown specific overlay
-#   - Branch deletion → teardown preview instances
-#
-# Secrets management:
-#   API keys are stored as GitHub repo secrets (one per provider):
-#     OPENAI_API_KEY, ANTHROPIC_API_KEY, GROQ_API_KEY
-#   The workflow injects them into k8s secrets at deploy time.
-#   API_SERVER_KEY is auto-generated per namespace.
-#
-# Persona changes:
-#   Since SOUL.md files live in git, any change to personas/ or overlays/*/SOUL.md
-#   triggers a redeploy of affected overlays with the updated persona.
-
 name: Agent Deploy
 
 on:
@@ -33,11 +7,12 @@ on:
       - 'overlays/**'
       - 'personas/**'
       - 'base/**'
+      - 'overlay-map.yaml'
       - '.github/workflows/agent-deploy.yml'
   workflow_dispatch:
     inputs:
       overlay:
-        description: 'Overlay to deploy (e.g. openai, anthropic, groq, ollama-local)'
+        description: 'Overlay to deploy (e.g. openai, anthropic, groq, ollama-local). Leave empty for all.'
         required: false
         type: string
       action:
@@ -50,51 +25,104 @@ on:
           - teardown
 
 env:
-  REGISTRY: ghcr.io
   HERMES_IMAGE: nousresearch/hermes-agent:latest
 
 jobs:
   # ============================================
-  # Detect which overlays changed
+  # Sync personas → overlays & detect changes
   # ============================================
-  detect-changes:
+  sync-and-detect:
     runs-on: ubuntu-latest
     outputs:
-      overlays: ${{ steps.set.outputs.overlays }}
+      overlays: ${{ steps.detect.outputs.overlays }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Detect changed overlays
-        id: set
+      - name: Sync persona files to overlays
         run: |
-          # Manual dispatch: use specified overlay
+          # Read overlay-map.yaml and copy persona -> overlay/SOUL.md
+          echo "Syncing personas to overlays..."
+          while IFS=':' read -r overlay persona; do
+            # Skip comments and blank lines
+            overlay=$(echo "$overlay" | xargs)
+            persona=$(echo "$persona" | xargs)
+            [ -z "$overlay" ] && continue
+            [ -z "$persona" ] && continue
+            [[ "$overlay" == \#* ]] && continue
+
+            if [ -f "personas/$persona" ] && [ -d "overlays/$overlay" ]; then
+              cp "personas/$persona" "overlays/$overlay/SOUL.md"
+              echo "  personas/$persona → overlays/$overlay/SOUL.md"
+            else
+              echo "  WARNING: personas/$persona or overlays/$overlay not found, skipping"
+            fi
+          done < overlay-map.yaml
+
+      - name: Commit synced personas (if changed)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git diff --quiet overlays/*/SOUL.md && echo "No persona changes to commit" && exit 0
+          git add overlays/*/SOUL.md
+          git commit -m "chore: sync persona files to overlays [skip ci]"
+          git push
+
+      - name: Detect changed overlays
+        id: detect
+        run: |
+          # Manual dispatch: use specified overlay (or all)
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             if [ -n "${{ inputs.overlay }}" ]; then
               echo "overlays=[\"${{ inputs.overlay }}\"]" >> $GITHUB_OUTPUT
             else
-              # No overlay specified = deploy all
               OVERLAYS=$(ls -d overlays/*/ | xargs -n1 basename | jq -R . | jq -s .)
               echo "overlays=$OVERLAYS" >> $GITHUB_OUTPUT
             fi
             exit 0
           fi
 
-          # Push to main: detect which overlays changed
+          # Push to main: detect changed overlays
           CHANGED=""
-          for overlay in overlays/*/; do
-            name=$(basename "$overlay")
-            # Check if any file in this overlay, personas/, or base/ changed
-            if git diff --name-only HEAD~1 HEAD -- \
-              "overlays/$name/" "personas/" "base/" ".github/workflows/agent-deploy.yml" | grep -q .; then
-              CHANGED="$name $CHANGED"
+
+          # Get list of changed files
+          CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD)
+
+          # Always rebuild all overlays if base/ or workflow changed
+          if echo "$CHANGED_FILES" | grep -qE "^base/|^\.github/workflows/"; then
+            OVERLAYS=$(ls -d overlays/*/ | xargs -n1 basename | jq -R . | jq -s .)
+            echo "overlays=$OVERLAYS" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # If overlay-map.yaml or personas/ changed, rebuild all mapped overlays
+          if echo "$CHANGED_FILES" | grep -qE "^overlay-map\.yaml|^personas/"; then
+            # Rebuild all overlays that map to a changed persona
+            while IFS=':' read -r overlay persona; do
+              overlay=$(echo "$overlay" | xargs)
+              persona=$(echo "$persona" | xargs)
+              [ -z "$overlay" ] || [ -z "$persona" ] && continue
+              [[ "$overlay" == \#* ]] && continue
+              # Check if this persona file changed
+              if echo "$CHANGED_FILES" | grep -q "personas/$persona"; then
+                CHANGED="$overlay $CHANGED"
+              fi
+            done < overlay-map.yaml
+          fi
+
+          # Check which overlay directories changed
+          for overlay_dir in overlays/*/; do
+            name=$(basename "$overlay_dir")
+            if echo "$CHANGED_FILES" | grep -q "^overlays/$name/"; then
+              # Don't add twice
+              echo "$CHANGED" | grep -qw "$name" || CHANGED="$name $CHANGED"
             fi
           done
 
           if [ -z "$CHANGED" ]; then
             echo "overlays=[]" >> $GITHUB_OUTPUT
           else
-            OVERLAYS=$(echo $CHANGED | tr ' ' '\n' | jq -R . | jq -s .)
+            OVERLAYS=$(echo $CHANGED | tr ' ' '\n' | sort -u | jq -R . | jq -s .)
             echo "overlays=$OVERLAYS" >> $GITHUB_OUTPUT
           fi
 
@@ -103,43 +131,69 @@ jobs:
   # ============================================
   validate:
     runs-on: ubuntu-latest
-    needs: detect-changes
-    if: needs.detect-changes.outputs.overlays != '[]'
+    needs: sync-and-detect
+    if: needs.sync-and-detect.outputs.overlays != '[]'
     strategy:
       matrix:
-        overlay: ${{ fromJson(needs.detect-changes.outputs.overlays) }}
+        overlay: ${{ fromJson(needs.sync-and-detect.outputs.overlays) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Sync personas (same as previous job)
+        run: |
+          while IFS=':' read -r overlay persona; do
+            overlay=$(echo "$overlay" | xargs)
+            persona=$(echo "$persona" | xargs)
+            [ -z "$overlay" ] || [ -z "$persona" ] && continue
+            [[ "$overlay" == \#* ]] && continue
+            [ -f "personas/$persona" ] && [ -d "overlays/$overlay" ] && \
+              cp "personas/$persona" "overlays/$overlay/SOUL.md"
+          done < overlay-map.yaml
 
       - name: Validate kustomize build
         run: |
           echo "Validating overlay: ${{ matrix.overlay }}"
           kubectl kustomize overlays/${{ matrix.overlay }} > /dev/null
 
-      - name: Validate SOUL.md exists
+      - name: Validate SOUL.md exists and has content
         run: |
           if [ ! -f "overlays/${{ matrix.overlay }}/SOUL.md" ]; then
             echo "Error: overlays/${{ matrix.overlay }}/SOUL.md not found"
             exit 1
           fi
-          echo "SOUL.md found ($(wc -l < overlays/${{ matrix.overlay }}/SOUL.md) lines)"
+          LINES=$(wc -l < "overlays/${{ matrix.overlay }}/SOUL.md")
+          echo "SOUL.md found ($LINES lines)"
+          if [ "$LINES" -lt 5 ]; then
+            echo "Warning: SOUL.md seems too short ($LINES lines). Expected a full persona definition."
+          fi
 
   # ============================================
   # Deploy overlay to k3s
   # ============================================
   deploy:
     runs-on: ubuntu-latest
-    needs: [detect-changes, validate]
+    needs: [sync-and-detect, validate]
     if: >
-      needs.detect-changes.outputs.overlays != '[]' &&
+      needs.sync-and-detect.outputs.overlays != '[]' &&
       (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.action == 'deploy'))
     strategy:
       matrix:
-        overlay: ${{ fromJson(needs.detect-changes.outputs.overlays) }}
+        overlay: ${{ fromJson(needs.sync-and-detect.outputs.overlays) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Sync personas (same as previous jobs)
+        run: |
+          while IFS=':' read -r overlay persona; do
+            overlay=$(echo "$overlay" | xargs)
+            persona=$(echo "$persona" | xargs)
+            [ -z "$overlay" ] || [ -z "$persona" ] && continue
+            [[ "$overlay" == \#* ]] && continue
+            [ -f "personas/$persona" ] && [ -d "overlays/$overlay" ] && \
+              cp "personas/$persona" "overlays/$overlay/SOUL.md"
+          done < overlay-map.yaml
 
       - name: Extract namespace from overlay
         id: ns
@@ -147,12 +201,19 @@ jobs:
           NAMESPACE=$(grep 'namespace:' overlays/${{ matrix.overlay }}/kustomization.yaml | awk '{print $2}')
           echo "namespace=$NAMESPACE" >> $GITHUB_OUTPUT
 
+      - name: Extract model from overlay
+        id: model
+        run: |
+          # Find the HERMES_MODEL env value from the kustomization patch
+          MODEL=$(grep -A5 'spec/template/spec/containers/0/env/5/value' \
+            overlays/${{ matrix.overlay }}/kustomization.yaml | grep 'value' | tail -1 | awk '{print $2}')
+          echo "model=${MODEL:-unknown}" >> $GITHUB_OUTPUT
+
       - name: Generate API Server Key
         id: api-key
         run: |
           API_KEY=$(openssl rand -hex 32)
           echo "key=$API_KEY" >> $GITHUB_OUTPUT
-          # Mask it from logs
           echo "::add-mask::$API_KEY"
 
       - name: Setup Tailscale
@@ -174,26 +235,23 @@ jobs:
       - name: Create/Update secrets
         env:
           API_SERVER_KEY: ${{ steps.api-key.outputs.key }}
-          # Provider-specific keys — only set non-empty values
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || '' }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY || '' }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY || '' }}
           OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY || '' }}
         run: |
+          NS="${{ steps.ns.outputs.namespace }}"
           # Delete existing secret to start fresh (handles key rotation)
-          kubectl delete secret hermes-secrets -n ${{ steps.ns.outputs.namespace }} --ignore-not-found=true
+          kubectl delete secret hermes-secrets -n "$NS" --ignore-not-found=true
 
-          # Build the secret from available keys
-          SECRET_ARGS="--namespace=${{ steps.ns.outputs.namespace }}"
-          SECRET_ARGS="$SECRET_ARGS --from-literal=API_SERVER_KEY=$API_SERVER_KEY"
+          # Build secret from available keys
+          ARGS="--namespace=$NS --from-literal=API_SERVER_KEY=$API_SERVER_KEY"
+          [ -n "$OPENAI_API_KEY" ] && ARGS="$ARGS --from-literal=OPENAI_API_KEY=$OPENAI_API_KEY"
+          [ -n "$ANTHROPIC_API_KEY" ] && ARGS="$ARGS --from-literal=ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY"
+          [ -n "$GROQ_API_KEY" ] && ARGS="$ARGS --from-literal=GROQ_API_KEY=$GROQ_API_KEY"
+          [ -n "$OLLAMA_API_KEY" ] && ARGS="$ARGS --from-literal=OLLAMA_API_KEY=$OLLAMA_API_KEY"
 
-          # Only add provider keys that are set
-          [ -n "$OPENAI_API_KEY" ] && SECRET_ARGS="$SECRET_ARGS --from-literal=OPENAI_API_KEY=$OPENAI_API_KEY"
-          [ -n "$ANTHROPIC_API_KEY" ] && SECRET_ARGS="$SECRET_ARGS --from-literal=ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY"
-          [ -n "$GROQ_API_KEY" ] && SECRET_ARGS="$SECRET_ARGS --from-literal=GROQ_API_KEY=$GROQ_API_KEY"
-          [ -n "$OLLAMA_API_KEY" ] && SECRET_ARGS="$SECRET_ARGS --from-literal=OLLAMA_API_KEY=$OLLAMA_API_KEY"
-
-          kubectl create secret generic hermes-secrets $SECRET_ARGS
+          kubectl create secret generic hermes-secrets $ARGS
 
       - name: Restart deployment to pick up new config
         run: |
@@ -207,30 +265,31 @@ jobs:
 
       - name: Print access info
         run: |
-          echo "============================================"
-          echo "  Agent deployed: ${{ matrix.overlay }}"
-          echo "  Namespace: ${{ steps.ns.outputs.namespace }}"
-          echo "============================================"
-          echo ""
-          echo "  Port-forward:"
-          echo "    kubectl port-forward svc/hermes 8642:8642 -n ${{ steps.ns.outputs.namespace }}"
-          echo ""
-          echo "  Test:"
-          echo "    curl http://localhost:8642/v1/chat/completions \\"
-          echo "      -H 'Authorization: Bearer <API_SERVER_KEY>' \\"
-          echo "      -H 'Content-Type: application/json' \\"
-          echo "      -d '{\"model\":\"<model>\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}]}'"
+          NS="${{ steps.ns.outputs.namespace }}"
+          echo "## 🚀 Agent deployed: ${{ matrix.overlay }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Overlay | \`${{ matrix.overlay }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Namespace | \`$NS\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Model | \`${{ steps.model.outputs.model }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Persona | \`(see SOUL.md)\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Connect" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "kubectl port-forward svc/hermes 8642:8642 -n $NS" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
 
   # ============================================
   # Teardown overlay from k3s
   # ============================================
   teardown:
     runs-on: ubuntu-latest
-    needs: detect-changes
+    needs: sync-and-detect
     if: github.event_name == 'workflow_dispatch' && inputs.action == 'teardown'
     strategy:
       matrix:
-        overlay: ${{ fromJson(needs.detect-changes.outputs.overlays) }}
+        overlay: ${{ fromJson(needs.sync-and-detect.outputs.overlays) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -255,15 +314,21 @@ jobs:
 
       - name: Delete namespace
         run: |
-          echo "Tearing down ${{ matrix.overlay }} (namespace: ${{ steps.ns.outputs.namespace }})"
-          kubectl delete namespace ${{ steps.ns.outputs.namespace }} --wait=true
-          echo "Namespace deleted."
+          NS="${{ steps.ns.outputs.namespace }}"
+          echo "🗑️ Tearing down ${{ matrix.overlay }} (namespace: $NS)"
+          kubectl delete namespace "$NS" --wait=true
 
       - name: Confirm deletion
         run: |
-          if kubectl get namespace ${{ steps.ns.outputs.namespace }} &>/dev/null; then
-            echo "WARNING: Namespace still exists"
+          NS="${{ steps.ns.outputs.namespace }}"
+          if kubectl get namespace "$NS" &>/dev/null; then
+            echo "::error::Namespace $NS still exists"
             exit 1
           else
-            echo "Confirmed: namespace ${{ steps.ns.outputs.namespace }} deleted"
+            echo "✅ Namespace $NS deleted"
           fi
+
+      - name: Print summary
+        run: |
+          echo "## 🗑️ Agent removed: ${{ matrix.overlay }}" >> $GITHUB_STEP_SUMMARY
+          echo "Namespace \`${{ steps.ns.outputs.namespace }}\` deleted." >> $GITHUB_STEP_SUMMARY
