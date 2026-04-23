@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hermes-soul
+data:
+  SOUL.md: |
+    # Hermes Agent
+
+    You are Hermes, a general-purpose AI agent running on Kubernetes.
+    This is the default persona — override it via your overlay's SOUL.md.

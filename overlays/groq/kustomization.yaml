@@ -6,17 +6,24 @@ resources:
 
 namespace: hermes-groq
 
+# DevOps persona — change SOUL.md in this directory to swap persona
+configMapGenerator:
+  - name: hermes-soul
+    behavior: replace
+    files:
+      - SOUL.md
+
 patches:
   - target:
       kind: Deployment
       name: hermes
     patch: |
       - op: replace
-        path: /spec/template/spec/containers/0/env/3/value  # HERMES_INFERENCE_PROVIDER
+        path: /spec/template/spec/containers/0/env/3/value
         value: custom
       - op: replace
-        path: /spec/template/spec/containers/0/env/4/value  # OPENAI_BASE_URL
+        path: /spec/template/spec/containers/0/env/4/value
         value: https://api.groq.com/openai/v1
       - op: replace
-        path: /spec/template/spec/containers/0/env/5/value  # HERMES_MODEL
+        path: /spec/template/spec/containers/0/env/5/value
         value: llama-3.3-70b-versatile

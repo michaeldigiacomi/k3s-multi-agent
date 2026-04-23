@@ -1,6 +1,6 @@
 # k3s-multi-agent
 
-Kustomize overlays for deploying multiple Hermes agents on a single k3s cluster, each using a different inference provider. Your production Hermes instance in the `hermes` namespace is **never touched** — each overlay creates an isolated instance in its own namespace with its own PVC, secrets, and config.
+Kustomize overlays for deploying multiple Hermes agents on a single k3s cluster, each using a different inference provider **and persona**. Your production Hermes instance in the `hermes` namespace is **never touched** — each overlay creates an isolated instance in its own namespace with its own PVC, secrets, and SOUL.md.
 
 ## Structure
 
@@ -8,15 +8,20 @@ Kustomize overlays for deploying multiple Hermes agents on a single k3s cluster,
 k3s-multi-agent/
 ├── base/                        # Shared Hermes deployment template
 │   ├── namespace.yaml
-│   ├── deployment.yaml          # Parameterized (provider, model, keys)
+│   ├── deployment.yaml          # Includes SOUL.md initContainer injection
 │   ├── service.yaml             # API endpoint per instance
 │   ├── pvc.yaml                 # 10Gi persistent storage
+│   ├── configmap-soul.yaml      # Default SOUL.md persona
 │   └── kustomization.yaml
+├── personas/                    # Ready-made personas
+│   ├── sre.md                   # Site Reliability Engineer
+│   ├── security.md              # Security specialist
+│   └── devops.md                # DevOps / infrastructure automation
 ├── overlays/
-│   ├── openai/                  # Test with OpenAI (GPT-4o)
-│   ├── anthropic/               # Test with Anthropic (Claude Sonnet 4)
-│   ├── groq/                    # Test with Groq (Llama 3.3 70B)
-│   └── ollama-local/            # Test with local Ollama (Llama 3.1 8B)
+│   ├── openai/                  # GPT-4o + default persona
+│   ├── anthropic/               # Claude Sonnet 4 + Security persona
+│   ├── groq/                    # Llama 3.3 70B + DevOps persona
+│   └── ollama-local/            # Llama 3.1 8B + SRE persona
 └── scripts/
     ├── spin-up.sh               # Deploy an overlay
     ├── tear-down.sh             # Remove an overlay
@@ -79,6 +84,70 @@ curl http://localhost:8643/v1/chat/completions \
 ./scripts/tear-down.sh openai
 ```
 
+## Personas
+
+Each overlay can inject a custom **SOUL.md** that defines the agent's personality, behavior, and expertise. The SOUL.md is loaded by Hermes at startup and shapes how the agent thinks and responds.
+
+### Built-in Personas
+
+| Persona | File | Description |
+|---------|------|-------------|
+| **Default** | `base/configmap-soul.yaml` | General-purpose Hermes assistant |
+| **SRE** | `personas/sre.md` | Site Reliability Engineer — monitors, responds to incidents, manages SLOs |
+| **Security** | `personas/security.md` | Security specialist — vulnerability assessment, threat modeling, hardening |
+| **DevOps** | `personas/devops.md` | Infrastructure automation — CI/CD, pipelines, GitOps, environment management |
+
+### Current Overlay → Persona Mapping
+
+| Overlay | Provider | Model | Persona |
+|---------|----------|-------|---------|
+| `openai` | OpenAI | gpt-4o | Default |
+| `anthropic` | Anthropic | claude-sonnet-4 | Security |
+| `groq` | Groq | llama-3.3-70b-versatile | DevOps |
+| `ollama-local` | Ollama (in-cluster) | llama3.1:8b | SRE |
+
+### How Personas Work
+
+The deployment includes an `inject-soul` initContainer that:
+1. Reads the SOUL.md from a ConfigMap
+2. Writes it to `/opt/data/SOUL.md` on the persistent volume
+3. Hermes loads it at startup as its system prompt
+
+To change an overlay's persona, edit its `kustomization.yaml` and update the `configMapGenerator` file path:
+
+```yaml
+configMapGenerator:
+  - name: hermes-soul
+    behavior: replace
+    files:
+      - SOUL.md=../../personas/sre.md    # Change this line
+```
+
+### Creating a Custom Persona
+
+1. Create a new `.md` file in `personas/` (e.g., `personas/data-scientist.md`)
+2. Define the persona — identity, responsibilities, communication style, principles
+3. Reference it in your overlay's `kustomization.yaml`:
+
+```yaml
+configMapGenerator:
+  - name: hermes-soul
+    behavior: replace
+    files:
+      - SOUL.md=../../personas/data-scientist.md
+```
+
+4. Apply: `kubectl apply -k overlays/your-overlay/`
+
+## Adding a New Provider
+
+1. Create a new directory under `overlays/` (e.g., `overlays/mistral/`)
+2. Copy `kustomization.yaml` from an existing overlay
+3. Update the namespace and env patches (provider, model, base URL)
+4. Choose or create a persona
+5. Create a `secrets.env.example` with required keys
+6. Deploy: `./scripts/spin-up.sh mistral`
+
 ## Isolation Guarantees
 
 Each overlay creates a fully isolated instance:
@@ -88,26 +157,10 @@ Each overlay creates a fully isolated instance:
 | **Namespace** | `hermes-openai`, `hermes-anthropic`, etc. | `hermes` |
 | **PVC** | Separate 10Gi volume per instance | Untouched |
 | **Secrets** | Each provider's API key in its own namespace | Untouched |
+| **SOUL.md** | Custom persona per instance | Untouched |
 | **Config** | Own model, provider, base URL | Untouched |
 | **Pod** | Isolated — no shared state | Untouched |
-
-## Adding a New Provider
-
-1. Create a new directory under `overlays/` (e.g., `overlays/mistral/`)
-2. Copy `kustomization.yaml` from an existing overlay
-3. Update the namespace and env patches (provider, model, base URL)
-4. Create a `secrets.env.example` with required keys
-5. Deploy: `./scripts/spin-up.sh mistral`
 
 ## Production Hermes
 
 Your production Hermes instance lives in the `hermes` namespace and is **never modified** by this tool. The base manifests here are a template — overlays apply to brand-new namespaces. You can safely spin up and tear down test instances without any risk to production.
-
-## Available Overlays
-
-| Overlay | Provider | Model | Namespace |
-|---------|----------|-------|-----------|
-| `openai` | OpenAI | gpt-4o | hermes-openai |
-| `anthropic` | Anthropic | claude-sonnet-4 | hermes-anthropic |
-| `groq` | Groq | llama-3.3-70b-versatile | hermes-groq |
-| `ollama-local` | Ollama (in-cluster) | llama3.1:8b | hermes-ollama-local |
