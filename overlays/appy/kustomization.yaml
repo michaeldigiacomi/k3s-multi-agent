@@ -1,0 +1,64 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+namespace: hermes-appy
+
+# Appy — Application Architect persona
+configMapGenerator:
+  - name: hermes-soul
+    behavior: replace
+    files:
+      - SOUL.md
+
+patches:
+  - target:
+      kind: Deployment
+      name: hermes
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/env/4/value
+        value: custom
+      - op: replace
+        path: /spec/template/spec/containers/0/env/5/value
+        value: http://ollama.ollama.svc.cluster.local:11434/v1
+      - op: replace
+        path: /spec/template/spec/containers/0/env/6/value
+        value: glm-5.1:cloud
+  # Add inject-config init container to patch model config on the PVC
+  - target:
+      kind: Deployment
+      name: hermes
+    patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: hermes
+      spec:
+        template:
+          spec:
+            initContainers:
+              - name: inject-config
+                image: busybox:1.36
+                command: ["/bin/sh", "-c"]
+                args:
+                  - |
+                    echo "Patching config.yaml model settings..."
+                    CFG="/opt/data/config.yaml"
+                    if [ -f "$CFG" ]; then
+                      # Replace model.default value
+                      sed -i 's/^[[:space:]]*default:.*/  default: "glm-5.1:cloud"/' "$CFG"
+                      # Replace provider value
+                      sed -i 's/^[[:space:]]*provider:.*/  provider: "custom"/' "$CFG"
+                      # Replace base_url value
+                      sed -i 's|^[[:space:]]*base_url:.*|  base_url: "http://ollama.ollama.svc.cluster.local:11434/v1"|' "$CFG"
+                      echo "config.yaml patched successfully."
+                      grep -E 'default:|provider:|base_url:' "$CFG" | head -5
+                    else
+                      echo "WARNING: $CFG not found, skipping patch."
+                    fi
+                volumeMounts:
+                  - name: hermes-data
+                    mountPath: /opt/data

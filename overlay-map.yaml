@@ -7,3 +7,5 @@ openai: default.md
 anthropic: security.md
 groq: devops.md
 ollama-local: sre.md
+appy: appy.md
+infred: infred.md
