@@ -3,10 +3,26 @@ kind: Kustomization
 
 resources:
   - namespace.yaml
+  - serviceaccount.yaml
+  - rbac.yaml
+  - networkpolicy.yaml
+  - resourcequota.yaml
+  - limitrange.yaml
+  - poddisruptionbudget.yaml
   - pvc.yaml
   - configmap-soul.yaml
   - deployment.yaml
   - service.yaml
+  # - ingress.yaml  # Uncomment if using an ingress controller (see file comments)
+  - hpa.yaml
 
 commonLabels:
   app.kubernetes.io/managed-by: k3s-multi-agent
+  app.kubernetes.io/part-of: hermes
+  k3s-multi-agent.io/component: agent
+
+# Pin the Hermes agent image to a specific digest or tag for reproducibility.
+# Overlays can override this with their own `images` block.
+# images:
+#   - name: nousresearch/hermes-agent
+#     newTag: v1.0.0@sha256:...

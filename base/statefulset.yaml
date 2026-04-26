@@ -1,11 +1,13 @@
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: hermes
 spec:
+  serviceName: hermes
   replicas: 1
-  strategy:
-    type: Recreate
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: RollingUpdate
   selector:
     matchLabels:
       app: hermes
@@ -191,9 +193,16 @@ spec:
             - name: hermes-data
               mountPath: /opt/data
       volumes:
-        - name: hermes-data
-          persistentVolumeClaim:
-            claimName: hermes-data-pvc
         - name: soul-volume
           configMap:
             name: hermes-soul
+  volumeClaimTemplates:
+    - metadata:
+        name: hermes-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: 10Gi

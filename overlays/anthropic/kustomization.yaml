@@ -6,6 +6,11 @@ resources:
 
 namespace: hermes-anthropic
 
+commonLabels:
+  k3s-multi-agent.io/overlay: anthropic
+  k3s-multi-agent.io/provider: anthropic
+  k3s-multi-agent.io/persona: security
+
 # Security persona — change SOUL.md in this directory to swap persona
 configMapGenerator:
   - name: hermes-soul
@@ -18,12 +23,19 @@ patches:
       kind: Deployment
       name: hermes
     patch: |
-      - op: replace
-        path: /spec/template/spec/containers/0/env/3/value
-        value: anthropic
-      - op: replace
-        path: /spec/template/spec/containers/0/env/4/value
-        value: https://api.anthropic.com/v1
-      - op: replace
-        path: /spec/template/spec/containers/0/env/5/value
-        value: claude-sonnet-4
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: hermes
+      spec:
+        template:
+          spec:
+            containers:
+              - name: hermes
+                env:
+                  - name: HERMES_INFERENCE_PROVIDER
+                    value: anthropic
+                  - name: OPENAI_BASE_URL
+                    value: https://api.anthropic.com/v1
+                  - name: HERMES_MODEL
+                    value: claude-sonnet-4

@@ -1,0 +1,14 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: hermes
+  labels:
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: hermes
+  endpoints:
+    - port: metrics
+      interval: 15s
+      path: /metrics

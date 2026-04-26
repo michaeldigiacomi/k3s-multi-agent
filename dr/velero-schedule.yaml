@@ -1,0 +1,21 @@
+apiVersion: velero.io/v1
+kind: Schedule
+metadata:
+  name: hermes-daily
+  namespace: velero
+spec:
+  schedule: "0 2 * * *"
+  template:
+    includedNamespaces:
+      - hermes-openai
+      - hermes-anthropic
+      - hermes-groq
+      - hermes-ollama-local
+      - hermes-appy
+      - hermes-infred
+    includedResources:
+      - persistentvolumeclaims
+      - secrets
+      - configmaps
+    ttl: 720h0m0s
+    storageLocation: default

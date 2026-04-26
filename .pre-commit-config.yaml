@@ -1,0 +1,13 @@
+repos:
+  - repo: local
+    hooks:
+      - id: validate-personas
+        name: Validate SOUL.md personas
+        entry: scripts/validate-persona.sh
+        language: script
+        files: '^personas/.*\.md$'
+      - id: kustomize-build
+        name: Kustomize build check
+        entry: bash -c 'for o in overlays/*/; do kubectl kustomize "$o" > /dev/null; done'
+        language: system
+        files: '^(base|overlays)/.*\.yaml$'

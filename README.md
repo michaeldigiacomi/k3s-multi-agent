@@ -1,6 +1,15 @@
 # k3s-multi-agent
 
-Kustomize overlays for deploying multiple Hermes agents on a single k3s cluster, each using a different inference provider **and persona**. Your production Hermes instance in the `hermes` namespace is **never touched** — each overlay creates an isolated instance in its own namespace with its own PVC, secrets, and SOUL.md.
+Kustomize overlays for deploying multiple Hermes agents on a single k3s cluster behind **Tailscale** (no public access). Each overlay uses a different inference provider **and persona**. Your production Hermes instance in the `hermes` namespace is **never touched** — each overlay creates an isolated instance in its own namespace with its own PVC, secrets, and SOUL.md.
+
+## Network Model
+
+This cluster lives on a **private Tailscale network** with no public internet access. All access is through Tailscale IPs or `kubectl port-forward`.
+
+- **No public DNS** — hostnames do not resolve on the public internet
+- **No Let's Encrypt** — cert-manager with public CAs will not work
+- **Transport encryption** — Tailscale's WireGuard tunnel encrypts all traffic between nodes
+- **Access patterns:** `kubectl port-forward` (dev), NodePort on Tailscale IPs (prod-like), or Tailscale Kubernetes Operator (best long-term)
 
 ## Structure
 
@@ -8,24 +17,57 @@ Kustomize overlays for deploying multiple Hermes agents on a single k3s cluster,
 k3s-multi-agent/
 ├── base/                        # Shared Hermes deployment template
 │   ├── namespace.yaml
-│   ├── deployment.yaml          # Includes SOUL.md initContainer injection
-│   ├── service.yaml             # API endpoint per instance
-│   ├── pvc.yaml                 # 10Gi persistent storage
+│   ├── serviceaccount.yaml      # Dedicated SA per overlay
+│   ├── rbac.yaml                # Minimal Role + RoleBinding
+│   ├── networkpolicy.yaml       # Default-deny + scoped allows
+│   ├── resourcequota.yaml       # Per-namespace quotas
+│   ├── limitrange.yaml          # Default container limits
+│   ├── poddisruptionbudget.yaml # Prevent eviction during drains
+│   ├── pvc.yaml
 │   ├── configmap-soul.yaml      # Default SOUL.md persona
+│   ├── deployment.yaml          # Hardened: probes, seccontext, pinned tools
+│   ├── service.yaml
+│   ├── ingress.yaml             # OPTIONAL — see file comments
+│   ├── hpa.yaml                 # Horizontal Pod Autoscaler
 │   └── kustomization.yaml
-├── personas/                    # Ready-made personas
-│   ├── sre.md                   # Site Reliability Engineer
-│   ├── security.md              # Security specialist
-│   └── devops.md                # DevOps / infrastructure automation
+├── personas/                    # Reusable persona definitions
+│   ├── default.md
+│   ├── sre.md
+│   ├── security.md
+│   ├── devops.md
+│   ├── appy.md
+│   └── infred.md
 ├── overlays/
 │   ├── openai/                  # GPT-4o + default persona
 │   ├── anthropic/               # Claude Sonnet 4 + Security persona
 │   ├── groq/                    # Llama 3.3 70B + DevOps persona
-│   └── ollama-local/            # Llama 3.1 8B + SRE persona
-└── scripts/
-    ├── spin-up.sh               # Deploy an overlay
-    ├── tear-down.sh             # Remove an overlay
-    └── list.sh                  # Show running instances
+│   ├── ollama-local/            # Llama 3.1 8B + SRE persona
+│   ├── appy/                    # glm-5.1:cloud + App Architect persona
+│   └── infred/                  # glm-5.1:cloud + Infra Architect persona
+├── scripts/
+│   ├── spin-up.sh               # Deploy an overlay
+│   ├── tear-down.sh             # Remove an overlay (triggers Velero backup)
+│   ├── list.sh                  # Show running instances
+│   ├── sync-personas.sh         # Sync personas to overlays
+│   ├── validate-persona.sh      # Validate persona structure
+│   ├── drift-check.sh           # Compare cluster state to git
+│   ├── tilt-up.sh               # Start Tilt for local dev
+│   └── migrate-to-statefulset.sh # Convert overlay to StatefulSet
+├── observability/               # Prometheus + Grafana
+│   ├── servicemonitor.yaml
+│   ├── grafana-dashboard.json
+│   └── kustomization.yaml
+├── ci/policies/                 # conftest Rego policies
+│   └── manifests.rego
+├── dr/                          # Velero backup schedule
+│   ├── velero-schedule.yaml
+│   └── kustomization.yaml
+├── docs/
+│   └── scaling.md               # Deployment vs StatefulSet guide
+└── .github/workflows/
+    ├── agent-deploy.yml           # Main CI/CD pipeline
+    ├── validate.yml               # PR validation (kube-score + conftest)
+    └── drift-detection.yml      # Scheduled drift checks
 ```
 
 ## Quick Start
@@ -67,7 +109,7 @@ kubectl rollout restart deployment/hermes -n hermes-openai
 ### 3. Test the agent
 
 ```bash
-# Port-forward to the test instance
+# Port-forward to the test instance (simplest, development)
 kubectl port-forward svc/hermes 8643:8642 -n hermes-openai
 
 # Send a test request
@@ -77,10 +119,27 @@ curl http://localhost:8643/v1/chat/completions \
   -d '{"model":"gpt-4o","messages":[{"role":"user","content":"Hello!"}]}'
 ```
 
-### 4. Tear down when done
+### 4. External access on Tailscale (optional)
+
+Since there is no public internet, use one of these patterns:
+
+**A. NodePort (production-like)**
+
+Patch the service to `type: NodePort` in your overlay kustomization, then access via any node's Tailscale IP:
+
+```
+http://<node-tailscale-ip>:<nodePort>
+```
+
+**B. Tailscale Kubernetes Operator (best long-term)**
+
+Install the [Tailscale Kubernetes operator](https://tailscale.com/kb/1236/kubernetes-operator). It creates a Tailscale machine per service with automatic HTTPS using Tailscale's internal CA. Uncomment `base/ingress.yaml` and change `ingressClassName` to `tailscale`.
+
+### 5. Tear down when done
 
 ```bash
 # Remove the instance (deletes namespace, PVC, everything)
+# Automatically triggers a Velero backup before deletion
 ./scripts/tear-down.sh openai
 ```
 
@@ -96,6 +155,8 @@ Each overlay can inject a custom **SOUL.md** that defines the agent's personalit
 | **SRE** | `personas/sre.md` | Site Reliability Engineer — monitors, responds to incidents, manages SLOs |
 | **Security** | `personas/security.md` | Security specialist — vulnerability assessment, threat modeling, hardening |
 | **DevOps** | `personas/devops.md` | Infrastructure automation — CI/CD, pipelines, GitOps, environment management |
+| **Appy** | `personas/appy.md` | Application Architect — design patterns, APIs, microservices |
+| **Infred** | `personas/infred.md` | Infrastructure Architect — cloud-native infrastructure, platform engineering |
 
 ### Current Overlay → Persona Mapping
 
@@ -105,6 +166,8 @@ Each overlay can inject a custom **SOUL.md** that defines the agent's personalit
 | `anthropic` | Anthropic | claude-sonnet-4 | Security |
 | `groq` | Groq | llama-3.3-70b-versatile | DevOps |
 | `ollama-local` | Ollama (in-cluster) | llama3.1:8b | SRE |
+| `appy` | Ollama | glm-5.1:cloud | Appy |
+| `infred` | Ollama | glm-5.1:cloud | Infred |
 
 ### How Personas Work
 
@@ -146,7 +209,8 @@ configMapGenerator:
 3. Update the namespace and env patches (provider, model, base URL)
 4. Choose or create a persona
 5. Create a `secrets.env.example` with required keys
-6. Deploy: `./scripts/spin-up.sh mistral`
+6. Add to `overlay-map.yaml`: `mistral: default.md`
+7. Deploy: `./scripts/spin-up.sh mistral`
 
 ## Isolation Guarantees
 
@@ -160,6 +224,9 @@ Each overlay creates a fully isolated instance:
 | **SOUL.md** | Custom persona per instance | Untouched |
 | **Config** | Own model, provider, base URL | Untouched |
 | **Pod** | Isolated — no shared state | Untouched |
+| **NetworkPolicy** | Default-deny + scoped egress | Untouched |
+| **ServiceAccount** | Dedicated SA with minimal RBAC | Untouched |
+| **ResourceQuota** | Caps CPU/memory/PVCs per namespace | Untouched |
 
 ## CI/CD Pipeline
 
@@ -170,18 +237,18 @@ A single GitHub Actions workflow manages all agents. It uses **matrix jobs** —
 ```
 Push to main
   │
-  ├─ sync-and-detect
-  │   ├─ Syncs persona files → overlay SOUL.md (based on overlay-map.yaml)
-  │   ├─ Commits synced files if changed [skip ci]
+  ├─ detect
+  │   ├─ Detects changed overlays BEFORE any commit
+  │   ├─ Syncs persona files → overlay SOUL.md
   │   └─ Outputs list of changed overlays (e.g. ["openai", "groq"])
   │
   ├─ validate (parallel matrix)
-  │   ├─ runner 1: kubectl kustomize overlays/openai ✓
-  │   └─ runner 2: kubectl kustomize overlays/groq ✓
+  │   ├─ runner 1: kube-score + conftest + kustomize ✓
+  │   └─ runner 2: kube-score + conftest + kustomize ✓
   │
   └─ deploy (parallel matrix)
-      ├─ runner 1: apply openai overlay + secrets + restart → namespace: hermes-openai
-      └─ runner 2: apply groq overlay + secrets + restart → namespace: hermes-groq
+      ├─ runner 1: apply openai overlay + stable secrets + restart
+      └─ runner 2: apply groq overlay + stable secrets + restart
 ```
 
 ### Triggers
@@ -233,7 +300,67 @@ Push and the openai agent will rebuild with the SRE persona.
 | `GROQ_API_KEY` | Groq API key (for groq overlay) |
 | `OLLAMA_API_KEY` | Ollama API key (for ollama-local overlay, optional) |
 
-Provider API keys only need to be set for overlays you're actually using. The pipeline auto-generates `API_SERVER_KEY` per namespace on each deploy — no need to set it manually.
+Provider API keys only need to be set for overlays you're actually using. The pipeline reuses existing `API_SERVER_KEY` from each namespace — no need to set it manually.
+
+## Security & Observability
+
+### Network Isolation
+
+- **Default-deny NetworkPolicy** — pods without an explicit allow policy get no traffic
+- **Scoped ingress** — only port 8642 from the same namespace
+- **Scoped egress** — DNS, Ollama service, and provider APIs on 443 only
+- **Cross-namespace blocked** — overlays cannot reach each other or production
+
+### RBAC
+
+- Dedicated `ServiceAccount` per overlay
+- Minimal `Role` (get/list on pods, services, configmaps, events, PVCs, deployments)
+- No cluster-wide permissions
+
+### Probes
+
+- `startupProbe` — waits up to 5 minutes for the agent to start
+- `readinessProbe` — prevents traffic to unready pods
+- `livenessProbe` — restarts crashed pods after 3 failures
+
+### Drift Detection
+
+A scheduled workflow runs every 6 hours comparing live cluster state to git manifests. If someone manually `kubectl edit`s a resource, it opens a GitHub issue.
+
+```bash
+# Check drift manually
+./scripts/drift-check.sh
+```
+
+### Backup
+
+Velero runs daily at 2 AM backing up all overlay PVCs, secrets, and configmaps. `tear-down.sh` triggers a pre-delete backup automatically.
+
+### Scaling
+
+- **Deployment + HPA** (default): Scales 1-3 replicas based on CPU. Use for stateless agents.
+- **StatefulSet** (optional): Stable network identity + individual PVCs per replica. Use for stateful agents.
+
+```bash
+# Migrate an overlay to StatefulSet
+./scripts/migrate-to-statefulset.sh openai
+```
+
+## Local Development
+
+Use Tilt for live-reload local development without CI round-trips:
+
+```bash
+# Start OpenAI overlay with hot-reload
+./scripts/tilt-up.sh openai
+
+# Tilt will:
+# 1. Sync personas to overlays
+# 2. Build kustomize manifests
+# 3. Apply to your local cluster
+# 4. Port-forward :8642 automatically
+# 5. Hot-reload on persona or manifest changes
+```
 
 ## Production Hermes
 

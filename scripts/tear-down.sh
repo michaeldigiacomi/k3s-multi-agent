@@ -30,6 +30,14 @@ fi
 echo "🗑️  Tearing down Hermes overlay: $OVERLAY (namespace: $NAMESPACE)"
 echo "   This will delete the namespace, PVC, and all resources."
 
+# Trigger a backup before deletion
+if command -v velero &>/dev/null; then
+  echo "📦 Triggering pre-delete Velero backup for $NAMESPACE..."
+  velero backup create "${NAMESPACE}-pre-delete-$(date +%s)" \
+    --include-namespaces "$NAMESPACE" \
+    --wait || true
+fi
+
 read -p "Are you sure? [y/N] " -r
 echo
 if [[ ! $REPLY =~ ^[Yy]$ ]]; then

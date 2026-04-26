@@ -1,0 +1,55 @@
+# ---------------------------------------------------------------------------
+# OPTIONAL: Ingress for external access
+# ---------------------------------------------------------------------------
+# This network is behind Tailscale with NO public internet access.
+# cert-manager + Let's Encrypt WILL NOT WORK here.
+#
+# For Tailscale-only networks, you have three options for external access:
+#
+# 1. kubectl port-forward (simplest, development)
+#    kubectl port-forward svc/hermes 8642:8642 -n hermes-openai
+#
+# 2. NodePort (production-like, no ingress needed)
+#    Patch the service to type: NodePort in your overlay:
+#      patches:
+#        - target:
+#            kind: Service
+#            name: hermes
+#          patch: |
+#            - op: replace
+#              path: /spec/type
+#              value: NodePort
+#            - op: add
+#              path: /spec/ports/0/nodePort
+#              value: 30080
+#    Access: http://<any-node-tailscale-ip>:30080
+#
+# 3. Tailscale Kubernetes Operator (best long-term)
+#    Install: https://tailscale.com/kb/1236/kubernetes-operator
+#    Change ingressClassName below to "tailscale"
+#    The operator creates a Tailscale machine per service with automatic HTTPS.
+#
+# 4. Plain HTTP ingress (if you run nginx-ingress internally)
+#    No TLS needed — Tailscale WireGuard encrypts all transport.
+#    Uncomment and use the manifest below. Access via the Tailscale IP
+#    of the node running the ingress controller.
+# ---------------------------------------------------------------------------
+
+# apiVersion: networking.k8s.io/v1
+# kind: Ingress
+# metadata:
+#   name: hermes
+#   annotations:
+#     nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+# spec:
+#   ingressClassName: nginx
+#   rules:
+#     - http:
+#         paths:
+#           - path: /
+#             pathType: Prefix
+#             backend:
+#               service:
+#                 name: hermes
+#                 port:
+#                   number: 8642

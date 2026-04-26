@@ -29,9 +29,9 @@ env:
 
 jobs:
   # ============================================
-  # Sync personas → overlays & detect changes
+  # Detect changed overlays BEFORE any commit
   # ============================================
-  sync-and-detect:
+  detect:
     runs-on: ubuntu-latest
     outputs:
       overlays: ${{ steps.detect.outputs.overlays }}
@@ -39,38 +39,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Sync persona files to overlays
-        run: |
-          # Read overlay-map.yaml and copy persona -> overlay/SOUL.md
-          echo "Syncing personas to overlays..."
-          while IFS=':' read -r overlay persona; do
-            # Skip comments and blank lines
-            overlay=$(echo "$overlay" | xargs)
-            persona=$(echo "$persona" | xargs)
-            [ -z "$overlay" ] && continue
-            [ -z "$persona" ] && continue
-            [[ "$overlay" == \#* ]] && continue
-
-            if [ -f "personas/$persona" ] && [ -d "overlays/$overlay" ]; then
-              cp "personas/$persona" "overlays/$overlay/SOUL.md"
-              echo "  personas/$persona → overlays/$overlay/SOUL.md"
-            else
-              echo "  WARNING: personas/$persona or overlays/$overlay not found, skipping"
-            fi
-          done < overlay-map.yaml
-
-      - name: Commit synced personas (if changed)
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git diff --quiet overlays/*/SOUL.md && echo "No persona changes to commit" && exit 0
-          git add overlays/*/SOUL.md
-          git commit -m "chore: sync persona files to overlays [skip ci]"
-          git push
-
       - name: Detect changed overlays
         id: detect
         run: |
+          # Capture the original push commit range before any local modifications
+          ORIGINAL_HEAD=$(git rev-parse HEAD)
+          PARENT_HEAD=$(git rev-parse HEAD~1)
+          echo "Comparing $PARENT_HEAD..$ORIGINAL_HEAD"
+
           # Manual dispatch: use specified overlay (or all)
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             if [ -n "${{ inputs.overlay }}" ]; then
@@ -82,11 +58,9 @@ jobs:
             exit 0
           fi
 
-          # Push to main: detect changed overlays
+          # Push to main: detect changed files in the original commit
+          CHANGED_FILES=$(git diff --name-only "$PARENT_HEAD" "$ORIGINAL_HEAD")
           CHANGED=""
-
-          # Get list of changed files
-          CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD)
 
           # Always rebuild all overlays if base/ or workflow changed
           if echo "$CHANGED_FILES" | grep -qE "^base/|^\.github/workflows/"; then
@@ -95,15 +69,13 @@ jobs:
             exit 0
           fi
 
-          # If overlay-map.yaml or personas/ changed, rebuild all mapped overlays
+          # If overlay-map.yaml or personas/ changed, rebuild affected overlays
           if echo "$CHANGED_FILES" | grep -qE "^overlay-map\.yaml|^personas/"; then
-            # Rebuild all overlays that map to a changed persona
             while IFS=':' read -r overlay persona; do
               overlay=$(echo "$overlay" | xargs)
               persona=$(echo "$persona" | xargs)
               [ -z "$overlay" ] || [ -z "$persona" ] && continue
               [[ "$overlay" == \#* ]] && continue
-              # Check if this persona file changed
               if echo "$CHANGED_FILES" | grep -q "personas/$persona"; then
                 CHANGED="$overlay $CHANGED"
               fi
@@ -114,7 +86,6 @@ jobs:
           for overlay_dir in overlays/*/; do
             name=$(basename "$overlay_dir")
             if echo "$CHANGED_FILES" | grep -q "^overlays/$name/"; then
-              # Don't add twice
               echo "$CHANGED" | grep -qw "$name" || CHANGED="$name $CHANGED"
             fi
           done
@@ -126,30 +97,27 @@ jobs:
             echo "overlays=$OVERLAYS" >> $GITHUB_OUTPUT
           fi
 
+      - name: Sync persona files to overlays
+        run: |
+          ./scripts/sync-personas.sh --commit
+
   # ============================================
   # Validate kustomize overlays
   # ============================================
   validate:
     runs-on: ubuntu-latest
-    needs: sync-and-detect
-    if: needs.sync-and-detect.outputs.overlays != '[]'
+    needs: detect
+    if: needs.detect.outputs.overlays != '[]'
     strategy:
       matrix:
-        overlay: ${{ fromJson(needs.sync-and-detect.outputs.overlays) }}
+        overlay: ${{ fromJson(needs.detect.outputs.overlays) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Sync personas (same as previous job)
+      - name: Sync personas
         run: |
-          while IFS=':' read -r overlay persona; do
-            overlay=$(echo "$overlay" | xargs)
-            persona=$(echo "$persona" | xargs)
-            [ -z "$overlay" ] || [ -z "$persona" ] && continue
-            [[ "$overlay" == \#* ]] && continue
-            [ -f "personas/$persona" ] && [ -d "overlays/$overlay" ] && \
-              cp "personas/$persona" "overlays/$overlay/SOUL.md"
-          done < overlay-map.yaml
+          ./scripts/sync-personas.sh
 
       - name: Validate kustomize build
         run: |
@@ -173,48 +141,32 @@ jobs:
   # ============================================
   deploy:
     runs-on: ubuntu-latest
-    needs: [sync-and-detect, validate]
+    needs: [detect, validate]
     if: >
-      needs.sync-and-detect.outputs.overlays != '[]' &&
+      needs.detect.outputs.overlays != '[]' &&
       (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.action == 'deploy'))
     strategy:
       matrix:
-        overlay: ${{ fromJson(needs.sync-and-detect.outputs.overlays) }}
+        overlay: ${{ fromJson(needs.detect.outputs.overlays) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Sync personas (same as previous jobs)
+      - name: Sync personas
         run: |
-          while IFS=':' read -r overlay persona; do
-            overlay=$(echo "$overlay" | xargs)
-            persona=$(echo "$persona" | xargs)
-            [ -z "$overlay" ] || [ -z "$persona" ] && continue
-            [[ "$overlay" == \#* ]] && continue
-            [ -f "personas/$persona" ] && [ -d "overlays/$overlay" ] && \
-              cp "personas/$persona" "overlays/$overlay/SOUL.md"
-          done < overlay-map.yaml
+          ./scripts/sync-personas.sh
 
       - name: Extract namespace from overlay
         id: ns
         run: |
-          NAMESPACE=$(grep 'namespace:' overlays/${{ matrix.overlay }}/kustomization.yaml | awk '{print $2}')
+          NAMESPACE=$(grep '^namespace:' overlays/${{ matrix.overlay }}/kustomization.yaml | awk '{print $2}')
           echo "namespace=$NAMESPACE" >> $GITHUB_OUTPUT
 
       - name: Extract model from overlay
         id: model
         run: |
-          # Find the HERMES_MODEL env value from the kustomization patch
-          MODEL=$(grep -A5 'spec/template/spec/containers/0/env/5/value' \
-            overlays/${{ matrix.overlay }}/kustomization.yaml | grep 'value' | tail -1 | awk '{print $2}')
+          MODEL=$(grep -A2 'name: HERMES_MODEL' overlays/${{ matrix.overlay }}/kustomization.yaml | grep 'value:' | awk '{print $2}')
           echo "model=${MODEL:-unknown}" >> $GITHUB_OUTPUT
-
-      - name: Generate API Server Key
-        id: api-key
-        run: |
-          API_KEY=$(openssl rand -hex 32)
-          echo "key=$API_KEY" >> $GITHUB_OUTPUT
-          echo "::add-mask::$API_KEY"
 
       - name: Setup Tailscale
         uses: tailscale/github-action@v2
@@ -228,44 +180,97 @@ jobs:
           method: kubeconfig
           kubeconfig: ${{ secrets.KUBE_CONFIG }}
 
+      - name: Reuse or generate API Server Key
+        id: api-key
+        env:
+          NS: ${{ steps.ns.outputs.namespace }}
+        run: |
+          # Try to reuse existing key so we don't break existing clients
+          EXISTING_KEY=$(kubectl get secret hermes-secrets -n "$NS" -o jsonpath='{.data.API_SERVER_KEY}' 2>/dev/null | base64 -d || true)
+          if [ -n "$EXISTING_KEY" ]; then
+            echo "Reusing existing API_SERVER_KEY from namespace $NS"
+            echo "key=$EXISTING_KEY" >> $GITHUB_OUTPUT
+            echo "::add-mask::$EXISTING_KEY"
+          else
+            API_KEY=$(openssl rand -hex 32)
+            echo "Generated new API_SERVER_KEY for namespace $NS"
+            echo "key=$API_KEY" >> $GITHUB_OUTPUT
+            echo "::add-mask::$API_KEY"
+          fi
+
       - name: Apply kustomize overlay
         run: |
           kubectl apply -k overlays/${{ matrix.overlay }}
 
-      - name: Create/Update secrets
+      - name: Apply secrets
         env:
+          NS: ${{ steps.ns.outputs.namespace }}
           API_SERVER_KEY: ${{ steps.api-key.outputs.key }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || '' }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY || '' }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY || '' }}
           OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY || '' }}
         run: |
-          NS="${{ steps.ns.outputs.namespace }}"
-          # Delete existing secret to start fresh (handles key rotation)
-          kubectl delete secret hermes-secrets -n "$NS" --ignore-not-found=true
+          # Build a temporary secret manifest and apply it (idempotent, no delete)
+          cat > /tmp/hermes-secrets.yaml <<EOF
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: hermes-secrets
+            namespace: $NS
+          type: Opaque
+          stringData:
+            API_SERVER_KEY: $API_SERVER_KEY
+          EOF
 
-          # Build secret from available keys
-          ARGS="--namespace=$NS --from-literal=API_SERVER_KEY=$API_SERVER_KEY"
-          [ -n "$OPENAI_API_KEY" ] && ARGS="$ARGS --from-literal=OPENAI_API_KEY=$OPENAI_API_KEY"
-          [ -n "$ANTHROPIC_API_KEY" ] && ARGS="$ARGS --from-literal=ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY"
-          [ -n "$GROQ_API_KEY" ] && ARGS="$ARGS --from-literal=GROQ_API_KEY=$GROQ_API_KEY"
-          [ -n "$OLLAMA_API_KEY" ] && ARGS="$ARGS --from-literal=OLLAMA_API_KEY=$OLLAMA_API_KEY"
+          if [ -n "$OPENAI_API_KEY" ]; then
+            cat >> /tmp/hermes-secrets.yaml <<EOF
+            OPENAI_API_KEY: $OPENAI_API_KEY
+          EOF
+          fi
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            cat >> /tmp/hermes-secrets.yaml <<EOF
+            ANTHROPIC_API_KEY: $ANTHROPIC_API_KEY
+          EOF
+          fi
+          if [ -n "$GROQ_API_KEY" ]; then
+            cat >> /tmp/hermes-secrets.yaml <<EOF
+            GROQ_API_KEY: $GROQ_API_KEY
+          EOF
+          fi
+          if [ -n "$OLLAMA_API_KEY" ]; then
+            cat >> /tmp/hermes-secrets.yaml <<EOF
+            OLLAMA_API_KEY: $OLLAMA_API_KEY
+          EOF
+          fi
 
-          kubectl create secret generic hermes-secrets $ARGS
+          kubectl apply -f /tmp/hermes-secrets.yaml
 
       - name: Restart deployment to pick up new config
+        env:
+          NS: ${{ steps.ns.outputs.namespace }}
         run: |
-          kubectl rollout restart deployment/hermes -n ${{ steps.ns.outputs.namespace }}
+          kubectl rollout restart deployment/hermes -n "$NS"
 
       - name: Wait for deployment
+        env:
+          NS: ${{ steps.ns.outputs.namespace }}
         run: |
-          kubectl rollout status deployment/hermes \
-            -n ${{ steps.ns.outputs.namespace }} \
-            --timeout=3m
+          kubectl rollout status deployment/hermes -n "$NS" --timeout=3m
+
+      - name: Rollback on failure
+        if: failure()
+        env:
+          NS: ${{ steps.ns.outputs.namespace }}
+        run: |
+          echo "::error::Deployment failed — rolling back $NS"
+          kubectl rollout undo deployment/hermes -n "$NS" || true
+          kubectl rollout status deployment/hermes -n "$NS" --timeout=2m || true
 
       - name: Print access info
+        env:
+          NS: ${{ steps.ns.outputs.namespace }}
         run: |
-          NS="${{ steps.ns.outputs.namespace }}"
           echo "## 🚀 Agent deployed: ${{ matrix.overlay }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
@@ -285,11 +290,11 @@ jobs:
   # ============================================
   teardown:
     runs-on: ubuntu-latest
-    needs: sync-and-detect
+    needs: detect
     if: github.event_name == 'workflow_dispatch' && inputs.action == 'teardown'
     strategy:
       matrix:
-        overlay: ${{ fromJson(needs.sync-and-detect.outputs.overlays) }}
+        overlay: ${{ fromJson(needs.detect.outputs.overlays) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -297,7 +302,7 @@ jobs:
       - name: Extract namespace from overlay
         id: ns
         run: |
-          NAMESPACE=$(grep 'namespace:' overlays/${{ matrix.overlay }}/kustomization.yaml | awk '{print $2}')
+          NAMESPACE=$(grep '^namespace:' overlays/${{ matrix.overlay }}/kustomization.yaml | awk '{print $2}')
           echo "namespace=$NAMESPACE" >> $GITHUB_OUTPUT
 
       - name: Setup Tailscale
@@ -313,14 +318,16 @@ jobs:
           kubeconfig: ${{ secrets.KUBE_CONFIG }}
 
       - name: Delete namespace
+        env:
+          NS: ${{ steps.ns.outputs.namespace }}
         run: |
-          NS="${{ steps.ns.outputs.namespace }}"
           echo "🗑️ Tearing down ${{ matrix.overlay }} (namespace: $NS)"
           kubectl delete namespace "$NS" --wait=true
 
       - name: Confirm deletion
+        env:
+          NS: ${{ steps.ns.outputs.namespace }}
         run: |
-          NS="${{ steps.ns.outputs.namespace }}"
           if kubectl get namespace "$NS" &>/dev/null; then
             echo "::error::Namespace $NS still exists"
             exit 1

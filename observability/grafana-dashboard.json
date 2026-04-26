@@ -1,0 +1,89 @@
+{
+  "dashboard": {
+    "id": null,
+    "uid": "hermes-agent-overview",
+    "title": "Hermes Agent Overview",
+    "tags": ["hermes", "k3s-multi-agent"],
+    "timezone": "browser",
+    "schemaVersion": 36,
+    "refresh": "30s",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Request Rate by Overlay",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "sum(rate(http_requests_total[5m])) by (namespace)",
+            "legendFormat": "{{namespace}}"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+      },
+      {
+        "id": 2,
+        "title": "P95 Latency",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (namespace, le))",
+            "legendFormat": "{{namespace}}"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+      },
+      {
+        "id": 3,
+        "title": "Error Rate",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "sum(rate(http_requests_total{status=~\"5..\"}[5m])) by (namespace)",
+            "legendFormat": "{{namespace}}"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}
+      },
+      {
+        "id": 4,
+        "title": "Active Pods",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "count by (namespace) (up{job=\"hermes\"})",
+            "legendFormat": "{{namespace}}"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}
+      },
+      {
+        "id": 5,
+        "title": "Token Usage per Provider",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "increase(tokens_total[1h])",
+            "legendFormat": "{{provider}}"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16}
+      },
+      {
+        "id": 6,
+        "title": "CPU / Memory per Pod",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "container_cpu_usage_seconds_total{container=\"hermes\"}",
+            "legendFormat": "CPU {{pod}}"
+          },
+          {
+            "expr": "container_memory_working_set_bytes{container=\"hermes\"}",
+            "legendFormat": "Memory {{pod}}"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16}
+      }
+    ]
+  }
+}

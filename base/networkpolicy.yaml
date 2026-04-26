@@ -1,0 +1,66 @@
+# Default-deny: pods without an explicit allow policy get no traffic.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: hermes-deny-all
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# Allow inbound traffic to the Hermes API port from the same namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: hermes-allow-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: hermes
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8642
+---
+# Allow required outbound traffic.
+# NOTE: Egress to external provider APIs is allowed on TCP 443 because standard
+# Kubernetes NetworkPolicy is L3/L4 only and cannot filter by FQDN.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: hermes-allow-egress
+spec:
+  podSelector:
+    matchLabels:
+      app: hermes
+  policyTypes:
+    - Egress
+  egress:
+    # Same-namespace communication
+    - to:
+        - podSelector: {}
+    # DNS (kube-system)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+    # Ollama in-cluster service (if used)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ollama
+      ports:
+        - protocol: TCP
+          port: 11434
+    # Provider APIs (OpenAI, Anthropic, Groq, etc.)
+    - ports:
+        - protocol: TCP
+          port: 443

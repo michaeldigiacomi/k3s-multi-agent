@@ -6,5 +6,9 @@ spec:
   ports:
     - port: 8642
       targetPort: 8642
+      name: http
+    - port: 8080
+      targetPort: 8080
+      name: metrics
   selector:
     app: hermes

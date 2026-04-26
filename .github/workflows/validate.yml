@@ -1,0 +1,48 @@
+name: Validate Manifests
+
+on:
+  pull_request:
+    paths:
+      - 'base/**'
+      - 'overlays/**'
+      - 'ci/policies/**'
+      - 'personas/**'
+
+jobs:
+  validate-manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kube-score
+        run: |
+          curl -LO https://github.com/zegl/kube-score/releases/download/v1.18.0/kube-score_1.18.0_linux_amd64.tar.gz
+          tar -xzf kube-score_1.18.0_linux_amd64.tar.gz
+          sudo mv kube-score /usr/local/bin/
+
+      - name: Install conftest
+        run: |
+          curl -LO https://github.com/open-policy-agent/conftest/releases/download/v0.50.0/conftest_0.50.0_linux_amd64.tar.gz
+          tar -xzf conftest_0.50.0_linux_amd64.tar.gz
+          sudo mv conftest /usr/local/bin/
+
+      - name: Validate all overlays with kube-score
+        run: |
+          for overlay in overlays/*/; do
+            echo "=== kube-score: $(basename $overlay) ==="
+            kubectl kustomize "$overlay" | kube-score score -
+          done
+
+      - name: Validate all overlays with conftest
+        run: |
+          for overlay in overlays/*/; do
+            echo "=== conftest: $(basename $overlay) ==="
+            kubectl kustomize "$overlay" | conftest test --policy ci/policies/ -
+          done
+
+  validate-personas:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate personas
+        run: ./scripts/validate-persona.sh

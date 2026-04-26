@@ -6,6 +6,11 @@ resources:
 
 namespace: hermes-ollama-local
 
+commonLabels:
+  k3s-multi-agent.io/overlay: ollama-local
+  k3s-multi-agent.io/provider: ollama
+  k3s-multi-agent.io/persona: sre
+
 # SRE persona — change SOUL.md in this directory to swap persona
 configMapGenerator:
   - name: hermes-soul
@@ -18,12 +23,19 @@ patches:
       kind: Deployment
       name: hermes
     patch: |
-      - op: replace
-        path: /spec/template/spec/containers/0/env/3/value
-        value: custom
-      - op: replace
-        path: /spec/template/spec/containers/0/env/4/value
-        value: http://ollama.ollama.svc.cluster.local:11434/v1
-      - op: replace
-        path: /spec/template/spec/containers/0/env/5/value
-        value: llama3.1:8b
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: hermes
+      spec:
+        template:
+          spec:
+            containers:
+              - name: hermes
+                env:
+                  - name: HERMES_INFERENCE_PROVIDER
+                    value: custom
+                  - name: OPENAI_BASE_URL
+                    value: http://ollama.ollama.svc.cluster.local:11434/v1
+                  - name: HERMES_MODEL
+                    value: llama3.1:8b
