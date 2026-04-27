@@ -1,5 +1,8 @@
+# conftest policies are consumed by `conftest test --policy ci/policies/`,
+# not by kubectl/kustomize. This kustomization is a no-op placeholder
+# to satisfy directory-based tooling expectations.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-resources:
-  - manifests.rego
+# No resources — Rego files are not valid Kubernetes manifests.
+# Use: conftest test --policy ci/policies/ <manifest.yaml>

@@ -12,7 +12,7 @@ if [ $# -lt 1 ]; then
   echo "Usage: $0 <overlay-name>"
   echo ""
   echo "Available overlays:"
-  ls -1 "$ROOT_DIR/overlays/" 2>/dev/null | sed 's/^/  /'
+  find "$ROOT_DIR/overlays/" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; 2>/dev/null | sed 's/^/  /'
   exit 1
 fi
 
@@ -22,7 +22,7 @@ OVERLAY_DIR="$ROOT_DIR/overlays/$OVERLAY"
 if [ ! -d "$OVERLAY_DIR" ]; then
   echo "Error: Overlay '$OVERLAY' not found at $OVERLAY_DIR"
   echo "Available overlays:"
-  ls -1 "$ROOT_DIR/overlays/" 2>/dev/null | sed 's/^/  /'
+  find "$ROOT_DIR/overlays/" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; 2>/dev/null | sed 's/^/  /'
   exit 1
 fi
 
@@ -76,12 +76,18 @@ kubectl create secret generic hermes-secrets \
 rm -f "$TMP_ENV"
 
 # Restart to pick up new secret/config
-echo "🔄 Restarting deployment..."
-kubectl rollout restart deployment/hermes -n "$NAMESPACE"
+if kubectl get statefulset hermes -n "$NAMESPACE" &>/dev/null; then
+  WORKLOAD_KIND="statefulset"
+else
+  WORKLOAD_KIND="deployment"
+fi
+
+echo "🔄 Restarting $WORKLOAD_KIND/hermes..."
+kubectl rollout restart "$WORKLOAD_KIND/hermes" -n "$NAMESPACE"
 
 # Wait for rollout
 echo "⏳ Waiting for rollout..."
-kubectl rollout status deployment/hermes -n "$NAMESPACE" --timeout=3m
+kubectl rollout status "$WORKLOAD_KIND/hermes" -n "$NAMESPACE" --timeout=3m
 
 echo ""
 echo "✅ Overlay '$OVERLAY' deployed to namespace '$NAMESPACE'"

@@ -9,7 +9,7 @@ OVERLAY="${1:-openai}"
 if [ ! -d "$ROOT_DIR/overlays/$OVERLAY" ]; then
   echo "Error: overlay '$OVERLAY' not found"
   echo "Available:"
-  ls -1 "$ROOT_DIR/overlays/"
+  find "$ROOT_DIR/overlays/" -mindepth 1 -maxdepth 1 -type d -exec basename {} \;
   exit 1
 fi
 

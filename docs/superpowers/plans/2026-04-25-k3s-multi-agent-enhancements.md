@@ -1213,7 +1213,7 @@ git commit -m "docs: add complete feature matrix to README"
 | Tilt Local Dev | Task 3.1 ✅ |
 | HPA | Task 3.2 ✅ |
 | StatefulSet | Task 3.3 ✅ |
-| ArgoCD GitOps | Task 4.1 ✅ |
+| Drift Detection | Task 4.1 ✅ |
 | Velero Backup | Task 4.2 ✅ |
 | Chaos Engineering | Task 4.3 ✅ |
 

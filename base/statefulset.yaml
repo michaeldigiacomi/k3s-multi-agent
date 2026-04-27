@@ -175,9 +175,17 @@ spec:
                   key: DISCORD_BOT_TOKEN
                   optional: true
             - name: DISCORD_ALLOWED_USERS
-              value: "1205965720018489344"
+              valueFrom:
+                secretKeyRef:
+                  name: hermes-secrets
+                  key: DISCORD_ALLOWED_USERS
+                  optional: true
             - name: DISCORD_HOME_CHANNEL
-              value: "1467952530150654186"
+              valueFrom:
+                secretKeyRef:
+                  name: hermes-secrets
+                  key: DISCORD_HOME_CHANNEL
+                  optional: true
           envFrom:
             - secretRef:
                 name: hermes-secrets

@@ -26,6 +26,7 @@ k3s-multi-agent/
 │   ├── pvc.yaml
 │   ├── configmap-soul.yaml      # Default SOUL.md persona
 │   ├── deployment.yaml          # Hardened: probes, seccontext, pinned tools
+│   ├── statefulset.yaml          # StatefulSet alternative for stateful agents
 │   ├── service.yaml
 │   ├── ingress.yaml             # OPTIONAL — see file comments
 │   ├── hpa.yaml                 # Horizontal Pod Autoscaler
@@ -51,12 +52,17 @@ k3s-multi-agent/
 │   ├── sync-personas.sh         # Sync personas to overlays
 │   ├── validate-persona.sh      # Validate persona structure
 │   ├── drift-check.sh           # Compare cluster state to git
+│   ├── generate-dashboard.sh    # Regenerate Grafana dashboard JSON
+│   ├── list.sh                  # Show running instances
 │   ├── tilt-up.sh               # Start Tilt for local dev
 │   └── migrate-to-statefulset.sh # Convert overlay to StatefulSet
 ├── observability/               # Prometheus + Grafana
 │   ├── servicemonitor.yaml
 │   ├── grafana-dashboard.json
 │   └── kustomization.yaml
+├── overlay-map.yaml            # Maps overlays to persona files
+├── Tiltfile                    # Tilt local dev configuration
+├── .pre-commit-config.yaml     # Pre-commit hooks (persona + kustomize validation)
 ├── ci/policies/                 # conftest Rego policies
 │   └── manifests.rego
 ├── dr/                          # Velero backup schedule
@@ -166,8 +172,8 @@ Each overlay can inject a custom **SOUL.md** that defines the agent's personalit
 | `anthropic` | Anthropic | claude-sonnet-4 | Security |
 | `groq` | Groq | llama-3.3-70b-versatile | DevOps |
 | `ollama-local` | Ollama (in-cluster) | llama3.1:8b | SRE |
-| `appy` | Ollama | glm-5.1:cloud | Appy |
-| `infred` | Ollama | glm-5.1:cloud | Infred |
+| `appy` | Custom (Ollama URL) | glm-5.1:cloud | Appy |
+| `infred` | Custom (Ollama URL) | glm-5.1:cloud | Infred |
 
 ### How Personas Work
 
@@ -211,6 +217,7 @@ configMapGenerator:
 5. Create a `secrets.env.example` with required keys
 6. Add to `overlay-map.yaml`: `mistral: default.md`
 7. Deploy: `./scripts/spin-up.sh mistral`
+8. Add the new namespace to `dr/velero-schedule.yaml` in `includedNamespaces`
 
 ## Isolation Guarantees
 
@@ -299,6 +306,9 @@ Push and the openai agent will rebuild with the SRE persona.
 | `ANTHROPIC_API_KEY` | Anthropic API key (for anthropic overlay) |
 | `GROQ_API_KEY` | Groq API key (for groq overlay) |
 | `OLLAMA_API_KEY` | Ollama API key (for ollama-local overlay, optional) |
+| `DISCORD_BOT_TOKEN` | Discord bot token (for Discord-connected overlays, optional) |
+| `DISCORD_ALLOWED_USERS` | Comma-separated Discord user IDs (optional) |
+| `DISCORD_HOME_CHANNEL` | Default Discord channel ID (optional) |
 
 Provider API keys only need to be set for overlays you're actually using. The pipeline reuses existing `API_SERVER_KEY` from each namespace — no need to set it manually.
 

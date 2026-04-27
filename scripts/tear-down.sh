@@ -21,7 +21,7 @@ if [ ! -d "$OVERLAY_DIR" ]; then
   exit 1
 fi
 
-NAMESPACE=$(grep 'namespace:' "$OVERLAY_DIR/kustomization.yaml" | awk '{print $2}')
+NAMESPACE=$(grep '^namespace:' "$OVERLAY_DIR/kustomization.yaml" | awk '{print $2}')
 if [ -z "$NAMESPACE" ]; then
   echo "Error: No namespace found in $OVERLAY_DIR/kustomization.yaml"
   exit 1

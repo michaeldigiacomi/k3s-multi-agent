@@ -52,7 +52,7 @@ jobs:
             if [ -n "${{ inputs.overlay }}" ]; then
               echo "overlays=[\"${{ inputs.overlay }}\"]" >> $GITHUB_OUTPUT
             else
-              OVERLAYS=$(ls -d overlays/*/ | xargs -n1 basename | jq -R . | jq -s .)
+              OVERLAYS=$(find overlays -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | jq -R . | jq -s .)
               echo "overlays=$OVERLAYS" >> $GITHUB_OUTPUT
             fi
             exit 0
@@ -64,7 +64,7 @@ jobs:
 
           # Always rebuild all overlays if base/ or workflow changed
           if echo "$CHANGED_FILES" | grep -qE "^base/|^\.github/workflows/"; then
-            OVERLAYS=$(ls -d overlays/*/ | xargs -n1 basename | jq -R . | jq -s .)
+            OVERLAYS=$(find overlays -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | jq -R . | jq -s .)
             echo "overlays=$OVERLAYS" >> $GITHUB_OUTPUT
             exit 0
           fi
@@ -84,6 +84,7 @@ jobs:
 
           # Check which overlay directories changed
           for overlay_dir in overlays/*/; do
+            [[ "$overlay_dir" == *".DS_Store"* ]] && continue
             name=$(basename "$overlay_dir")
             if echo "$CHANGED_FILES" | grep -q "^overlays/$name/"; then
               echo "$CHANGED" | grep -qw "$name" || CHANGED="$name $CHANGED"
@@ -210,62 +211,82 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY || '' }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY || '' }}
           OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY || '' }}
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN || '' }}
+          DISCORD_ALLOWED_USERS: ${{ secrets.DISCORD_ALLOWED_USERS || '' }}
+          DISCORD_HOME_CHANNEL: ${{ secrets.DISCORD_HOME_CHANNEL || '' }}
         run: |
           # Build a temporary secret manifest and apply it (idempotent, no delete)
-          cat > /tmp/hermes-secrets.yaml <<EOF
+          cat > /tmp/hermes-secrets.yaml <<SECRET_EOF
           apiVersion: v1
           kind: Secret
           metadata:
             name: hermes-secrets
-            namespace: $NS
+            namespace: ${NS}
           type: Opaque
           stringData:
-            API_SERVER_KEY: $API_SERVER_KEY
-          EOF
+            API_SERVER_KEY: ${API_SERVER_KEY}
+          SECRET_EOF
 
           if [ -n "$OPENAI_API_KEY" ]; then
-            cat >> /tmp/hermes-secrets.yaml <<EOF
-            OPENAI_API_KEY: $OPENAI_API_KEY
-          EOF
+            echo "  OPENAI_API_KEY: ${OPENAI_API_KEY}" >> /tmp/hermes-secrets.yaml
           fi
           if [ -n "$ANTHROPIC_API_KEY" ]; then
-            cat >> /tmp/hermes-secrets.yaml <<EOF
-            ANTHROPIC_API_KEY: $ANTHROPIC_API_KEY
-          EOF
+            echo "  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}" >> /tmp/hermes-secrets.yaml
           fi
           if [ -n "$GROQ_API_KEY" ]; then
-            cat >> /tmp/hermes-secrets.yaml <<EOF
-            GROQ_API_KEY: $GROQ_API_KEY
-          EOF
+            echo "  GROQ_API_KEY: ${GROQ_API_KEY}" >> /tmp/hermes-secrets.yaml
           fi
           if [ -n "$OLLAMA_API_KEY" ]; then
-            cat >> /tmp/hermes-secrets.yaml <<EOF
-            OLLAMA_API_KEY: $OLLAMA_API_KEY
-          EOF
+            echo "  OLLAMA_API_KEY: ${OLLAMA_API_KEY}" >> /tmp/hermes-secrets.yaml
+          fi
+          if [ -n "$DISCORD_BOT_TOKEN" ]; then
+            echo "  DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN}" >> /tmp/hermes-secrets.yaml
+          fi
+          if [ -n "$DISCORD_ALLOWED_USERS" ]; then
+            echo "  DISCORD_ALLOWED_USERS: ${DISCORD_ALLOWED_USERS}" >> /tmp/hermes-secrets.yaml
+          fi
+          if [ -n "$DISCORD_HOME_CHANNEL" ]; then
+            echo "  DISCORD_HOME_CHANNEL: ${DISCORD_HOME_CHANNEL}" >> /tmp/hermes-secrets.yaml
           fi
 
           kubectl apply -f /tmp/hermes-secrets.yaml
+          rm -f /tmp/hermes-secrets.yaml
 
       - name: Restart deployment to pick up new config
         env:
           NS: ${{ steps.ns.outputs.namespace }}
         run: |
-          kubectl rollout restart deployment/hermes -n "$NS"
+          if kubectl get statefulset hermes -n "$NS" >/dev/null 2>&1; then
+            WORKLOAD=statefulset
+          else
+            WORKLOAD=deployment
+          fi
+          kubectl rollout restart $WORKLOAD/hermes -n "$NS"
 
       - name: Wait for deployment
         env:
           NS: ${{ steps.ns.outputs.namespace }}
         run: |
-          kubectl rollout status deployment/hermes -n "$NS" --timeout=3m
+          if kubectl get statefulset hermes -n "$NS" >/dev/null 2>&1; then
+            WORKLOAD=statefulset
+          else
+            WORKLOAD=deployment
+          fi
+          kubectl rollout status $WORKLOAD/hermes -n "$NS" --timeout=3m
 
       - name: Rollback on failure
         if: failure()
         env:
           NS: ${{ steps.ns.outputs.namespace }}
         run: |
+          if kubectl get statefulset hermes -n "$NS" >/dev/null 2>&1; then
+            WORKLOAD=statefulset
+          else
+            WORKLOAD=deployment
+          fi
           echo "::error::Deployment failed — rolling back $NS"
-          kubectl rollout undo deployment/hermes -n "$NS" || true
-          kubectl rollout status deployment/hermes -n "$NS" --timeout=2m || true
+          kubectl rollout undo $WORKLOAD/hermes -n "$NS" || true
+          kubectl rollout status $WORKLOAD/hermes -n "$NS" --timeout=2m || true
 
       - name: Print access info
         env:

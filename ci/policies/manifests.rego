@@ -1,32 +1,40 @@
 package main
 
+# Shared predicate: both Deployment and StatefulSet use the same pod template structure
+is_workload(kind) {
+  kind == "Deployment"
+}
+is_workload(kind) {
+  kind == "StatefulSet"
+}
+
 deny[msg] {
-  input.kind == "Deployment"
+  is_workload(input.kind)
   container := input.spec.template.spec.containers[_]
   endswith(container.image, ":latest")
-  msg := sprintf("Container %s in %s uses 'latest' tag", [container.name, input.metadata.name])
+  msg := sprintf("Container %s in %s %s uses 'latest' tag", [container.name, input.kind, input.metadata.name])
 }
 
 deny[msg] {
-  input.kind == "Deployment"
+  is_workload(input.kind)
   not input.spec.template.spec.containers[_].readinessProbe
-  msg := sprintf("Deployment %s is missing readinessProbe", [input.metadata.name])
+  msg := sprintf("%s %s is missing readinessProbe", [input.kind, input.metadata.name])
 }
 
 deny[msg] {
-  input.kind == "Deployment"
+  is_workload(input.kind)
   not input.spec.template.spec.containers[_].livenessProbe
-  msg := sprintf("Deployment %s is missing livenessProbe", [input.metadata.name])
+  msg := sprintf("%s %s is missing livenessProbe", [input.kind, input.metadata.name])
 }
 
 deny[msg] {
-  input.kind == "Deployment"
+  is_workload(input.kind)
   not input.spec.template.spec.securityContext.runAsNonRoot
-  msg := sprintf("Deployment %s must set runAsNonRoot", [input.metadata.name])
+  msg := sprintf("%s %s must set runAsNonRoot", [input.kind, input.metadata.name])
 }
 
 warn[msg] {
-  input.kind == "Deployment"
+  is_workload(input.kind)
   not input.spec.template.spec.securityContext.fsGroup
-  msg := sprintf("Deployment %s should set fsGroup", [input.metadata.name])
+  msg := sprintf("%s %s should set fsGroup", [input.kind, input.metadata.name])
 }
